@@ -15,6 +15,39 @@ FAWE is designed for efficient world editing.
 FastAsyncWorldEdit is a fork of WorldEdit that has huge speed and memory improvements and considerably more features.  
 If you use other plugins that depend on WorldEdit, simply having FAWE installed will boost their performance.
 
+### Coral SMP Dev 26.2 trim lock-order correction
+
+The `tongue` branch ports the SMP Dev correction from installed revision
+`31e0175d7b39b3b866de3d03117057c4bb4b6e18` onto the pulled upstream source.
+The 26.2 adapter's aggressive `trim` held its global section lock while calling
+`CharGetBlocks.trim`, which waits on per-section monitors. Region-owned applies
+hold a per-section monitor before acquiring the global lock: the JVM detected
+two cycles involving both lock owners on SMP Dev.
+
+The corrected `trim` releases the metadata locks before invalidating ordinal
+sections. Non-aggressive trimming snapshots section metadata before taking any
+per-layer monitor. The current upstream `GlobalPalette` handling is retained;
+world writes, region ownership and other adapters are unchanged.
+
+`overlay/exact31e0175-trim.patch` preserves the original adapter-source correction.
+The standalone `overlay` build assembles only `PaperweightGetBlocks.trim(Z)Z`
+onto the exact installed jar, SHA-256
+`5555bd629b8bf96e513bea704c5f8659858ad83f8722c1137eae4b141c18f09d`.
+It retains the 4,125 other installed entries byte-for-byte and refuses another
+baseline. This version-locked overlay is not a full replacement runtime built
+from the newer upstream source or different NMS mappings.
+
+Build the overlay separately with Java 25:
+`gradlew.bat -p overlay -PfaweBaseline=<installed-fawe.jar> -PcanvasRuntime=<canvas-26.2-runtime.jar> patchedJar`.
+The matching locally published `io.canvasmc.canvas:canvas-api:26.2.local-SNAPSHOT`
+is required; the baseline, runtime jar and generated artifacts are not committed.
+
+The exact-revision correction was verified on SMP Dev only: both JVM deadlock
+cycles disappeared, all 27 duel maps became ready after actual paste completion,
+3,375 clipboard/block samples matched, and a subsequent reset completed with
+region heartbeats responding. The normal watchdog remains enabled. This source
+publication did not rebuild, rerun those checks or deploy to production.
+
 ## Support
 
 If you have any questions or need help with something, please join our Discord server:
