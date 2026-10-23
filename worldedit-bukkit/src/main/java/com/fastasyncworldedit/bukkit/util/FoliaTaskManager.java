@@ -11,27 +11,13 @@ import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.jetbrains.annotations.NotNull;
 
-import java.lang.invoke.MethodHandle;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static java.lang.invoke.MethodHandles.lookup;
-import static java.lang.invoke.MethodType.methodType;
-
 public class FoliaTaskManager extends TaskManager {
-
-    private final static MethodHandle IS_GLOBAL_TICK_THREAD;
-
-    static {
-        try {
-            IS_GLOBAL_TICK_THREAD = lookup().findStatic(Bukkit.class, "isGlobalTickThread", methodType(boolean.class));
-        } catch (NoSuchMethodException | IllegalAccessException e) {
-          throw new AssertionError("Incompatile Folia version", e);
-        }
-    }
 
     @Override
     public Task repeat(@NotNull final Runnable runnable, final int interval) {
@@ -172,7 +158,7 @@ public class FoliaTaskManager extends TaskManager {
 
     @Override
     public <T> T syncGlobal(final Supplier<T> supplier) {
-        if (isGlobalTickThread()) {
+        if (FoliaSupport.isGlobalTickThread()) {
             return supplier.get();
         }
         FutureTask<T> task = new FutureTask<>(supplier::get);
@@ -182,10 +168,6 @@ public class FoliaTaskManager extends TaskManager {
         } catch (InterruptedException | ExecutionException e) {
             throw new RuntimeException(e);
         }
-    }
-
-    private boolean isGlobalTickThread() {
-        return FoliaSupport.getRethrowing(() -> (boolean) IS_GLOBAL_TICK_THREAD.invokeExact());
     }
 
     private void ensureOffTickThread() {

@@ -2,6 +2,7 @@ package com.sk89q.worldedit.bukkit.adapter.impl.fawe.v26_3;
 
 import com.fastasyncworldedit.core.Fawe;
 import com.fastasyncworldedit.core.math.IntPair;
+import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.internal.block.BlockStateIdAccess;
@@ -14,6 +15,7 @@ import net.minecraft.core.Direction;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.FullChunkStatus;
 import net.minecraft.server.level.ServerChunkCache;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.entity.BlockEntity;
@@ -26,9 +28,16 @@ import org.bukkit.event.block.BlockPhysicsEvent;
 import org.enginehub.linbus.tree.LinCompoundTag;
 
 import javax.annotation.Nullable;
+import java.lang.invoke.MethodHandle;
+import java.lang.invoke.MethodHandles;
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -60,7 +69,36 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
         this.level = level;
         // Use the actual tick as minecraft-defined so we don't try to force blocks into the world when the server's already lagging.
         //  - With the caveat that we don't want to have too many cached changed (1024) so we'd flush those at 1024 anyway.
-        this.lastTick = new AtomicInteger(MinecraftServer.currentTick);
+        this.lastTick = new AtomicInteger(serverTick());
+    }
+
+    /**
+     * Getter for {@code MinecraftServer.currentTick}, or {@code null} where the server dropped the field (Canvas 26.3).
+     */
+    @Nullable
+    private static final MethodHandle CURRENT_TICK = findCurrentTick();
+
+    @Nullable
+    private static MethodHandle findCurrentTick() {
+        try {
+            return MethodHandles.publicLookup().findStaticGetter(MinecraftServer.class, "currentTick", int.class);
+        } catch (ReflectiveOperationException exception) {
+            return null;
+        }
+    }
+
+    /**
+     * {@return the server tick if exposed, otherwise a 50 ms wall-clock tick}. Only compared to detect a new tick.
+     */
+    private static int serverTick() {
+        if (CURRENT_TICK != null) {
+            try {
+                return (int) CURRENT_TICK.invokeExact();
+            } catch (Throwable ignored) {
+                // fall through to wall clock
+            }
+        }
+        return (int) (System.nanoTime() / 50_000_000L);
     }
 
     private Level getLevel() {
@@ -96,7 +134,7 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
             LevelChunk levelChunk, BlockPos blockPos,
             net.minecraft.world.level.block.state.BlockState blockState
     ) {
-        int currentTick = MinecraftServer.currentTick;
+        int currentTick = serverTick();
         if (PaperweightPlatformAdapter.isTickThreadFor(levelChunk)) {
             return levelChunk.setBlockState(blockPos, blockState,
                     this.sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
@@ -245,37 +283,60 @@ public class PaperweightFaweWorldNativeAccess implements WorldNativeAccess<Level
         } else {
             toSend = Collections.emptySet();
         }
-        Runnable runnable = () -> {
-            changes.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
-                    sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
-            ));
-            if (!sendChunks) {
-                return;
-            }
-            for (IntPair chunk : toSend) {
-                PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
-            }
-        };
+        if (FoliaSupport.isFolia()) {
+            applyOnOwningRegions(changes, toSend);
+            return;
+        }
+        Runnable runnable = () -> applyChanges(changes, toSend);
         TaskManager.taskManager().async(() -> TaskManager.taskManager().sync(runnable));
     }
 
     @Override
     public synchronized void flush() {
-        Runnable runnable = () -> {
-            cachedChanges.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
-                    sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
-            ));
-            for (IntPair chunk : cachedChunksToSend) {
-                PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
-            }
-        };
-        if (Fawe.isMainThread()) {
-            runnable.run();
+        if (FoliaSupport.isFolia()) {
+            applyOnOwningRegions(Set.copyOf(cachedChanges), Set.copyOf(cachedChunksToSend));
         } else {
-            TaskManager.taskManager().sync(runnable);
+            Runnable runnable = () -> applyChanges(cachedChanges, cachedChunksToSend);
+            if (Fawe.isMainThread()) {
+                runnable.run();
+            } else {
+                TaskManager.taskManager().sync(runnable);
+            }
         }
         cachedChanges.clear();
         cachedChunksToSend.clear();
+    }
+
+    private void applyChanges(Collection<CachedChange> changes, Collection<IntPair> toSend) {
+        changes.forEach(cc -> cc.levelChunk.setBlockState(cc.blockPos, cc.blockState,
+                sideEffectSet.shouldApply(SideEffect.UPDATE) ? 0 : 512
+        ));
+        for (IntPair chunk : toSend) {
+            PaperweightPlatformAdapter.sendChunk(chunk, getLevel().getWorld().getHandle(), chunk.x(), chunk.z());
+        }
+    }
+
+    /**
+     * Folia has no main thread: every chunk must be written and sent from the region owning it.
+     */
+    private void applyOnOwningRegions(Set<CachedChange> changes, Set<IntPair> toSend) {
+        final Map<IntPair, List<CachedChange>> changesByChunk = new HashMap<>();
+        for (CachedChange change : changes) {
+            changesByChunk.computeIfAbsent(
+                    new IntPair(change.levelChunk.locX, change.levelChunk.locZ),
+                    chunk -> new ArrayList<>()
+            ).add(change);
+        }
+        for (IntPair chunk : toSend) {
+            changesByChunk.computeIfAbsent(chunk, key -> new ArrayList<>());
+        }
+        final ServerLevel serverLevel = getLevel().getWorld().getHandle();
+        changesByChunk.forEach((chunk, chunkChanges) -> PaperweightPlatformAdapter.task(
+                () -> applyChanges(chunkChanges, toSend.contains(chunk) ? List.of(chunk) : List.of()),
+                serverLevel,
+                chunk.x(),
+                chunk.z()
+        ));
     }
 
     private record CachedChange(

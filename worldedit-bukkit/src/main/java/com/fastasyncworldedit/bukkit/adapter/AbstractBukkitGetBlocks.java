@@ -10,12 +10,17 @@ import com.fastasyncworldedit.core.queue.IChunkSet;
 import com.fastasyncworldedit.core.queue.IQueueExtent;
 import com.fastasyncworldedit.core.queue.implementation.QueueHandler;
 import com.fastasyncworldedit.core.queue.implementation.blocks.CharGetBlocks;
+import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.MemUtil;
+import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.task.FaweThreadUtil;
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
 import com.sk89q.worldedit.extent.Extent;
 import com.sk89q.worldedit.internal.util.LogManagerCompat;
 import com.sk89q.worldedit.util.formatting.text.TextComponent;
 import org.apache.logging.log4j.Logger;
+import org.bukkit.Bukkit;
+import org.bukkit.World;
 
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -23,6 +28,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
+import java.util.concurrent.FutureTask;
 import java.util.concurrent.locks.ReentrantLock;
 
 public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends CharGetBlocks {
@@ -54,6 +60,11 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
     }
 
     protected abstract void send();
+
+    /**
+     * {@return the Bukkit world this chunk belongs to}
+     */
+    protected abstract World getBukkitWorld();
 
     protected abstract CompletableFuture<LevelChunk> ensureLoaded(ServerLevel serverLevel);
 
@@ -171,7 +182,7 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
                 }
             };
             //noinspection unchecked - required at compile time
-            return (T) (Future) queueHandler.sync(chain);
+            return (T) (Future) syncAtChunk(chain);
         } else {
             if (callback != null) {
                 callback.run();
@@ -180,6 +191,27 @@ public abstract class AbstractBukkitGetBlocks<ServerLevel, LevelChunk> extends C
             }
         }
         return null;
+    }
+
+    /**
+     * Run a task on the thread owning this chunk: the chunk's region on Folia, the main thread otherwise.
+     *
+     * @param task task to run
+     * @param <V>  result type
+     * @return future completed once the task ran
+     */
+    protected <V> Future<V> syncAtChunk(Callable<V> task) throws Exception {
+        if (!FoliaSupport.isFolia()) {
+            return Fawe.instance().getQueueHandler().sync(task);
+        }
+        final World world = getBukkitWorld();
+        final FutureTask<V> future = new FutureTask<>(task);
+        if (Bukkit.isOwnedByCurrentRegion(world, chunkX, chunkZ)) {
+            future.run();
+        } else {
+            TaskManager.taskManager().task(future, BukkitAdapter.adapt(world), chunkX, chunkZ);
+        }
+        return future;
     }
 
     @Override
