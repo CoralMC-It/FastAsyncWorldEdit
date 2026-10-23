@@ -15,6 +15,15 @@ FAWE is designed for efficient world editing.
 FastAsyncWorldEdit is a fork of WorldEdit that has huge speed and memory improvements and considerably more features.  
 If you use other plugins that depend on WorldEdit, simply having FAWE installed will boost their performance.
 
+### CoralMC changes
+
+This fork tracks upstream `main` with the following additions:
+
+* Folia support merged from upstream `feature/folia-v3` (`folia-supported: true`), ported to every
+  adapter including 26.3. Folia is detected at runtime, so the same jar runs on Paper and on Folia/Canvas.
+* Lock-order fix in the 26.2 and 26.3 adapters' `PaperweightGetBlocks.trim`: the global section lock is
+  released before per-section monitors are taken, avoiding a deadlock with region-owned applies.
+
 ## Support
 
 If you have any questions or need help with something, please join our Discord server:
