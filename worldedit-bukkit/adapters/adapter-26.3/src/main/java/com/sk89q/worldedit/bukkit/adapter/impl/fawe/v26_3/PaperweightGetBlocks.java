@@ -1012,50 +1012,49 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     @Override
     @SuppressWarnings("unchecked")
     public boolean trim(boolean aggressive) {
-        synchronized (this) {
-            if (sections == null && (!aggressive || levelChunk == null)) {
-                skyLight = new DataLayer[getSectionCount()];
-                blockLight = new DataLayer[getSectionCount()];
-                return !aggressive || super.trim(true);
-            }
-        }
-        if (aggressive) {
-            sectionLock.writeLock().lock();
-            try {
+        // Region applies hold sectionLocks[layer] before sectionLock. Never hold
+        // sectionLock (or this monitor) while super.trim acquires sectionLocks.
+        // Clearing the cached metadata and clearing ordinal sections are separate
+        // invalidations; both leave the actual world chunk untouched.
+        sectionLock.writeLock().lock();
+        try {
+            if (aggressive || sections == null) {
                 synchronized (this) {
                     skyLight = new DataLayer[getSectionCount()];
                     blockLight = new DataLayer[getSectionCount()];
+                    if (!aggressive) {
+                        return true;
+                    }
                     sections = null;
                     levelChunk = null;
-                    return super.trim(true);
                 }
-            } finally {
-                sectionLock.writeLock().unlock();
             }
+        } finally {
+            sectionLock.writeLock().unlock();
         }
-        synchronized (this) {
-            for (int i = getMinSectionPosition(); i <= getMaxSectionPosition(); i++) {
-                int layer = i - getMinSectionPosition();
-                if (!hasSection(i) || super.blocks[layer] == null) {
+        if (aggressive) {
+            return super.trim(true);
+        }
+        // Refresh the metadata snapshot before acquiring any per-layer monitor.
+        // Holding a layer monitor across getSections would invert reset()'s order.
+        LevelChunkSection[] snapshot = getSections(true);
+        for (int i = getMinSectionPosition(); i <= getMaxSectionPosition(); i++) {
+            int layer = i - getMinSectionPosition();
+            synchronized (super.sectionLocks[layer]) {
+                if (super.blocks[layer] == null) {
                     continue;
                 }
-                LevelChunkSection existing = getSections(true)[layer];
+                LevelChunkSection existing = snapshot[layer];
+                if (existing == null) {
+                    super.trim(false, i);
+                    continue;
+                }
                 try {
                     final PalettedContainer<BlockState> blocksExisting = existing.getStates();
-
                     final Object dataObject = PaperweightPlatformAdapter.fieldData.get(blocksExisting);
                     final Palette<BlockState> palette = (Palette<BlockState>) PaperweightPlatformAdapter.fieldPalette.get(
                             dataObject);
-                    int paletteSize;
-
-                    if (!(palette instanceof GlobalPalette)) {
-                        paletteSize = palette.getSize();
-                    } else {
-                        super.trim(false, i);
-                        continue;
-                    }
-                    if (paletteSize == 1) {
-                        //If the cached palette size is 1 then no blocks can have been changed i.e. do not need to update these chunks.
+                    if (!(palette instanceof GlobalPalette) && palette.getSize() == 1) {
                         continue;
                     }
                     super.trim(false, i);
@@ -1063,8 +1062,8 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                     super.trim(false, i);
                 }
             }
-            return true;
         }
+        return true;
     }
 
 }
