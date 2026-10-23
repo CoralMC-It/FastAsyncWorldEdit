@@ -326,6 +326,11 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
     }
 
     @Override
+    protected org.bukkit.World getBukkitWorld() {
+        return serverLevel.getWorld();
+    }
+
+    @Override
     protected <T extends Future<T>> T internalCall(
             IChunkSet set,
             Runnable finalizer,

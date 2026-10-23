@@ -11,6 +11,7 @@ import com.fastasyncworldedit.core.queue.IQueueChunk;
 import com.fastasyncworldedit.core.queue.IQueueExtent;
 import com.fastasyncworldedit.core.queue.Trimable;
 import com.fastasyncworldedit.core.queue.implementation.chunk.ChunkCache;
+import com.fastasyncworldedit.core.util.FoliaSupport;
 import com.fastasyncworldedit.core.util.MemUtil;
 import com.fastasyncworldedit.core.util.TaskManager;
 import com.fastasyncworldedit.core.util.collection.CleanableThreadLocal;
@@ -99,8 +100,17 @@ public abstract class QueueHandler implements Trimable, Runnable {
     private long allocate = 50;
 
     protected QueueHandler() {
-        // TODO (folia) make main thread independent
-        // TaskManager.taskManager().repeat(this, 1);
+        // Drains the sync queues: the main thread on Paper/Spigot, the global region thread on Folia. Work that must run on
+        // the thread owning a chunk is scheduled on that region directly instead of through these queues.
+        TaskManager.taskManager().repeat(this, 1);
+    }
+
+    /**
+     * {@return whether the current thread drains the sync queues}, i.e. tasks submitted from it must run inline instead of
+     * waiting for a later drain.
+     */
+    private static boolean isSyncThread() {
+        return Fawe.isMainThread() || FoliaSupport.isGlobalTickThread();
     }
 
     @ApiStatus.Internal
@@ -347,7 +357,7 @@ public abstract class QueueHandler implements Trimable, Runnable {
     }
 
     private <T> Future<T> sync(Runnable run, T value, Queue<FutureTask> queue) {
-        if (Fawe.isMainThread()) {
+        if (isSyncThread()) {
             run.run();
             return Futures.immediateFuture(value);
         }
@@ -358,7 +368,7 @@ public abstract class QueueHandler implements Trimable, Runnable {
     }
 
     private <T> Future<T> sync(Runnable run, Queue<FutureTask> queue) {
-        if (Fawe.isMainThread()) {
+        if (isSyncThread()) {
             run.run();
             return Futures.immediateCancelledFuture();
         }
@@ -369,7 +379,7 @@ public abstract class QueueHandler implements Trimable, Runnable {
     }
 
     private <T> Future<T> sync(Callable<T> call, Queue<FutureTask> queue) throws Exception {
-        if (Fawe.isMainThread()) {
+        if (isSyncThread()) {
             return Futures.immediateFuture(call.call());
         }
         final FutureTask<T> result = new FutureTask<>(call);
@@ -379,7 +389,7 @@ public abstract class QueueHandler implements Trimable, Runnable {
     }
 
     private <T> Future<T> sync(Supplier<T> call, Queue<FutureTask> queue) {
-        if (Fawe.isMainThread()) {
+        if (isSyncThread()) {
             return Futures.immediateFuture(call.get());
         }
         final FutureTask<T> result = new FutureTask<>(call::get);
