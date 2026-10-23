@@ -122,7 +122,6 @@ tasks {
         pluginJars(*project(":worldedit-bukkit").getTasksByName("shadowJar", false).map { (it as Jar).archiveFile }
                 .toTypedArray())
         jvmArgs("-Dcom.mojang.eula.agree=true")
-
     }
 }
 
