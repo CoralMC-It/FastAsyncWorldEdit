@@ -351,7 +351,8 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
             copies.put(copyKey, copy);
         }
         //TODO: optimise
-        List<BlockEntity> beacons = TaskManager.taskManager().sync(() -> {
+        // Must run on the thread owning the chunk: on Folia the global region has no world data for block entity removal
+        List<BlockEntity> beacons = TaskManager.taskManager().syncAt(() -> {
             // Remove existing tiles. Create a copy so that we can remove blocks
             Map<BlockPos, BlockEntity> chunkTiles = new HashMap<>(nmsChunk.getBlockEntities());
             List<BlockEntity> beaconEntities = null;
@@ -385,7 +386,7 @@ public class PaperweightGetBlocks extends AbstractBukkitGetBlocks<ServerLevel, L
                 }
             }
             return beaconEntities;
-        });
+        }, BukkitAdapter.adapt(nmsWorld.getWorld()), chunkX, chunkZ);
         final BiomeType[][] biomes = set.getBiomes();
 
         int bitMask = 0;
